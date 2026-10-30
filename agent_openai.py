@@ -43,7 +43,9 @@ class Draft(BaseModel):
 def get_review_table(broadcast_id: str) -> str:
     """방송 하나의 계산표(칸 id, 이름, 표시값)와 코드가 고른 주요 요인을 돌려준다."""
     t = _table(broadcast_id)
+    b = DATA[broadcast_id]
     return json.dumps({"cells": {k: [v[0], v[2]] for k, v in t["cells"].items()},
+                       "conditions": {"사은품": b.gift, "비": b.rain},
                        "factor": t["factor"], "same": t["same"], "diff": t["diff"]}, ensure_ascii=False)
 
 
@@ -57,9 +59,18 @@ def save_to_learning_table(broadcast_id: str, verdict: str, md_note: str = "") -
     return "saved"
 
 
+def _md_excluded():
+    """학습표에서 MD 메모(돌발)가 달려 학습 제외된 방송 id."""
+    if not LEARNING.exists():
+        return set()
+    with open(LEARNING, encoding="utf-8") as f:
+        return {r[0] for r in csv.reader(f) if len(r) > 11 and r[11] == "0"}
+
+
 def _table(broadcast_id):
     b = DATA[broadcast_id]
-    return build_table(b, [h for h in DATA.values() if h.day < b.day])
+    out = _md_excluded()
+    return build_table(b, [h for h in DATA.values() if h.day < b.day and h.id not in out])
 
 
 @output_guardrail
@@ -69,7 +80,7 @@ async def checker_guardrail(ctx, agent, output: "Draft") -> GuardrailFunctionOut
 
 
 INSTRUCTIONS = """너는 홈쇼핑 MD의 방송 다음 날 프로모션 리뷰 초안을 쓴다.
-get_review_table로 계산표를 받아, 3~5문장으로 쓴다.
+get_review_table로 계산표를 받아, 3~4문장으로 쓴다.
 - 숫자는 계산표 표시값을 그대로 옮기고, 그 문장의 cites에 칸 id를 넣는다.
 - 관찰 데이터다. '때문', '덕분', '입증'을 쓰지 말고 '비교군 대비'로 쓴다.
 - factor가 없거나 same·diff 중 하나가 3 미만이면 verdict는 '보류'.
@@ -85,10 +96,17 @@ review_agent = Agent(
 )
 
 
-def run(broadcast_id):
+def run(broadcast_id, md_decide=None):
+    """md_decide(tool_name, arguments) -> True(승인)/False(거절). 없으면 저장 요청은 모두 거절(승인 대기로 둠)."""
     with trace("promo-review", metadata={"broadcast": broadcast_id}):
         try:
             res = Runner.run_sync(review_agent, f"방송 {broadcast_id} 리뷰 초안")
+            while res.interruptions:  # save_to_learning_table 승인 대기
+                state = res.to_state()
+                for item in res.interruptions:
+                    ok = md_decide(item.name, item.arguments) if md_decide else False
+                    state.approve(item) if ok else state.reject(item)
+                res = Runner.run_sync(review_agent, state)
         except OutputGuardrailTripwireTriggered as e:
             return None, e.guardrail_result.output.output_info  # 돌려보냄: 검사기 오류 목록
     return res.final_output.model_dump(), []

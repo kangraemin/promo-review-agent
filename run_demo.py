@@ -8,6 +8,7 @@
 - rejected_example.json 숫자를 틀리게 바꾼 초안이 돌려보내진 예
 """
 import csv
+import math
 import copy
 import html
 import json
@@ -18,7 +19,9 @@ from pathlib import Path
 
 from checker import NUM, check
 from data import FACTORS, make_broadcasts
-from review import FLAG_GAP, build_table, draft_from_table
+import numpy as np
+
+from review import FLAG_GAP, build_table, draft_from_table, fit_effects, flat
 from simulate import best_combo, effect_error, mean_abs, rank_combos
 
 OUT = Path(__file__).parent / "out"
@@ -89,15 +92,32 @@ def sim_error(data, keep):
     return round(sum(errs) / len(errs), 2)
 
 
+def auto_trim(data, cut=-0.2):
+    """MD 없이 자동으로 이상치를 빼는 비교안: 상품군별 회귀 잔차가 cut(로그)보다 낮은 방송을 뺀다."""
+    keep = set()
+    for cat in ("패션", "뷰티", "식품", "가전", "리빙"):
+        rows = [b for b in data if b.category == cat]
+        c0, coef, mu = fit_effects(rows, ridge=0.5)
+        for b in rows:
+            r = math.log(b.orders / b.forecast_orders) - c0 - float(coef @ (np.array(flat(b)) - mu))
+            if r > cut:
+                keep.add(b.id)
+    return keep
+
+
 def sim_sweep(seeds=(1, 2, 3, 4, 5, 7), event_rate=0.5):
-    """리뷰 표시 없이 방송 기록만 쓴 시뮬레이터 vs 승인된 리뷰 표시를 반영한 시뮬레이터."""
-    raw = rev = 0
+    """방송 기록만 / MD 없이 자동 이상치 제외 / 승인된 리뷰(MD 돌발 메모) 반영 — 시뮬레이터 효과 오차 비교."""
+    raw = auto = rev = 0
     for seed in seeds:
         data = make_broadcasts(seed=seed, event_rate=event_rate)
         flagged = {b.id: abs(build_table(b, [x for x in data if x.day < b.day])["gap"]) >= FLAG_GAP for b in data}
+        keep = auto_trim(data)
         raw += sim_error(data, lambda b: True)
+        auto += sim_error(data, lambda b: b.id in keep)
         rev += sim_error(data, lambda b: not (flagged[b.id] and b.event))
-    return {"방송기록만_효과오차_%p": round(raw / len(seeds), 2), "리뷰반영_효과오차_%p": round(rev / len(seeds), 2)}
+    n = len(seeds)
+    return {"방송기록만_효과오차_%p": round(raw / n, 2), "자동이상치제외_효과오차_%p": round(auto / n, 2),
+            "리뷰반영_효과오차_%p": round(rev / n, 2)}
 
 
 def seed_sweep(seeds=(1, 2, 3, 4, 5, 7)):
@@ -116,15 +136,18 @@ def seed_sweep(seeds=(1, 2, 3, 4, 5, 7)):
             if b.event:
                 out.add(b.id)
             d = draft_from_table(b, t)
-            v = naive_cause(b, h)
-            if v in ("카드할인", "사은품", "무이자"):
-                tot["기준선_조건"] += 1
-                tot["기준선_조건_맞음"] += v == b.true_cause
             if b.true_cause in ("카드할인", "사은품", "무이자"):
                 tot["조건이_정답"] += 1
                 tot["조건이_정답_짚음"] += d["verdict"] == "조건" and d["factor"] == b.true_cause
             if d["verdict"] == "보류":
                 continue
+            v = naive_cause(b, h)  # 기준선도 보류를 뺀 같은 방송들로 센다
+            if v in ("카드할인", "사은품", "무이자"):
+                tot["기준선_조건"] += 1
+                tot["기준선_조건_맞음"] += v == b.true_cause
+                tot["기준선_조건이_정답_짚음"] += v == b.true_cause
+            if b.true_cause in ("카드할인", "사은품", "무이자"):
+                tot["판정된_조건이_정답"] += 1
             if d["verdict"] == "조건":
                 tot["조건"] += 1
                 tot["조건_맞음"] += correct(d, b)
@@ -140,7 +163,8 @@ def seed_sweep(seeds=(1, 2, 3, 4, 5, 7)):
             "평균_늘_우연_%": round(sum(r["늘_우연_%"] for r in rows) / len(rows), 1),
             "조건_판정_정밀도": f'{tot["조건_맞음"]}/{tot["조건"]} ({tot["조건_맞음"] / tot["조건"] * 100:.1f}%)',
             "기준선_조건_정밀도": f'{tot["기준선_조건_맞음"]}/{tot["기준선_조건"]} ({tot["기준선_조건_맞음"] / tot["기준선_조건"] * 100:.1f}%)',
-            "조건이_정답인_방송_중_짚은_비율": f'{tot["조건이_정답_짚음"]}/{tot["조건이_정답"]} ({tot["조건이_정답_짚음"] / tot["조건이_정답"] * 100:.1f}%)'}
+            "조건이_정답인_방송_중_짚은_비율": f'{tot["조건이_정답_짚음"]}/{tot["조건이_정답"]} ({tot["조건이_정답_짚음"] / tot["조건이_정답"] * 100:.1f}%)',
+            "기준선_조건이_정답인_방송_중_짚은_비율(보류_제외)": f'{tot["기준선_조건이_정답_짚음"]}/{tot["판정된_조건이_정답"]} ({tot["기준선_조건이_정답_짚음"] / tot["판정된_조건이_정답"] * 100:.1f}%)'}
 
 
 def main():
