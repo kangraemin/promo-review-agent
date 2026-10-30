@@ -25,6 +25,7 @@ from review import build_table
 
 DATA = {b.id: b for b in make_broadcasts()}
 LEARNING = Path(__file__).parent / "out" / "learning_table_agent.csv"
+PENDING = []  # MD가 승인한 저장. 초안이 검사기를 통과해야 학습표에 확정한다
 
 
 class Sentence(BaseModel):
@@ -53,10 +54,9 @@ def get_review_table(broadcast_id: str) -> str:
 def save_to_learning_table(broadcast_id: str, verdict: str, md_note: str = "") -> str:
     """MD가 승인한 리뷰의 조건-결과 한 줄을 시뮬레이터 학습표에 저장한다. md_note가 있으면 학습에서 뺀다."""
     b = DATA[broadcast_id]
-    with open(LEARNING, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([b.id, b.product, b.card_disc, b.gift, b.nointerest, int(b.rain),
-                                b.forecast_orders, b.orders, b.returns_7d, verdict, md_note, int(not md_note)])
-    return "saved"
+    PENDING.append([b.id, b.product, b.card_disc, b.gift, b.nointerest, int(b.rain),
+                    b.forecast_orders, b.orders, b.returns_7d, verdict, md_note, int(not md_note)])
+    return "approved; saved after the draft passes the checker"
 
 
 def _md_excluded():
@@ -97,7 +97,9 @@ review_agent = Agent(
 
 
 def run(broadcast_id, md_decide=None):
-    """md_decide(tool_name, arguments) -> True(승인)/False(거절). 없으면 저장 요청은 모두 거절(승인 대기로 둠)."""
+    """md_decide(tool_name, arguments) -> True(승인)/False(거절). 없으면 저장 요청은 모두 거절(승인 대기로 둠).
+    순서: 검사기 통과 → MD 승인 → 학습표 확정. 승인을 먼저 받았어도 초안이 검사기에 걸리면 저장하지 않는다."""
+    PENDING.clear()
     with trace("promo-review", metadata={"broadcast": broadcast_id}):
         try:
             res = Runner.run_sync(review_agent, f"방송 {broadcast_id} 리뷰 초안")
@@ -108,7 +110,12 @@ def run(broadcast_id, md_decide=None):
                     state.approve(item) if ok else state.reject(item)
                 res = Runner.run_sync(review_agent, state)
         except OutputGuardrailTripwireTriggered as e:
+            PENDING.clear()
             return None, e.guardrail_result.output.output_info  # 돌려보냄: 검사기 오류 목록
+    if PENDING:
+        with open(LEARNING, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(PENDING)
+        PENDING.clear()
     return res.final_output.model_dump(), []
 
 
