@@ -50,3 +50,11 @@ def test_beats_naive_baseline_over_seeds():
             ours += d["factor"] == b.true_cause
             naive += naive_cause(b, h) == b.true_cause
     assert ours / n > 0.5 and ours > naive * 1.4
+
+
+def test_md_marks_make_simulator_closer():
+    from run_demo import sim_sweep
+    with_events = sim_sweep(seeds=(1, 2, 3))
+    assert with_events["리뷰반영_효과오차_%p"] < with_events["방송기록만_효과오차_%p"]
+    no_events = sim_sweep(seeds=(1, 2, 3), event_rate=0.0)
+    assert no_events["리뷰반영_효과오차_%p"] == no_events["방송기록만_효과오차_%p"]

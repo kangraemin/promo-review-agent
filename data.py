@@ -9,6 +9,8 @@
 - 무이자 10개월 x1.15(가전만)
 - 비 오는 날 x1.10 (프로모션 아닌 원인)
 - 고가 사은품은 7일 반품률 +4%p
+- 돌발(품절 조기 종료 등) x0.72. 방송 기록 칸에는 남지 않고 MD만 안다.
+  강한 조건(카드 10%·고가 사은품)일수록 일찍 품절되기 쉽다고 둠.
 편성 AI 예측은 상품·시간대 기준선에 '평소 조건' 평균 효과만 반영하고, 그날 조건·날씨는 모른다.
 """
 import math
@@ -27,6 +29,7 @@ CATEGORIES = {
     "리빙": (129000, 0.30),
 }
 FACTORS = ["카드할인", "사은품", "무이자", "날씨"]
+EVENT_EFF = 0.72
 
 
 def gift_eff(category, gift):
@@ -61,6 +64,7 @@ class Broadcast:
     orders: int
     returns_7d: int
     true_cause: str  # 예측과 실제의 차이를 가장 크게 만든 요인(정답)
+    event: str = ""  # MD만 아는 돌발 사정. 계산표·학습 특성에는 쓰지 않는다
 
     def to_dict(self):
         return asdict(self)
@@ -74,7 +78,7 @@ def _typical(category):
     return card * gift * ni * (1.10 * 0.25 + 1.0 * 0.75)
 
 
-def make_broadcasts(n=300, seed=7):
+def make_broadcasts(n=300, seed=7, event_rate=0.5):
     rng = random.Random(seed)
     products = []
     for cat, (price, margin) in CATEGORIES.items():
@@ -100,7 +104,9 @@ def make_broadcasts(n=300, seed=7):
             "날씨": rain_eff(rain),
         }
         noise = math.exp(rng.gauss(0, 0.06))
-        actual = expected * math.prod(effs.values()) * noise
+        p_event = event_rate * (0.03 + (0.12 if card == 10 else 0) + (0.06 if gift == "고가" else 0))  # 기본 약 4~5%
+        event = "품절 조기 종료" if rng.random() < p_event else ""
+        actual = expected * math.prod(effs.values()) * noise * (EVENT_EFF if event else 1.0)
         orders = max(1, round(actual))
         ret_rate = 0.08 + (0.04 if gift == "고가" else 0) + rng.uniform(-0.01, 0.01)
         returns = round(orders * ret_rate)
@@ -112,11 +118,14 @@ def make_broadcasts(n=300, seed=7):
             "날씨": math.log(1.025),
         }
         contrib = {f: math.log(effs[f]) - typical_log[f] for f in FACTORS}
+        if event:
+            contrib["돌발"] = math.log(EVENT_EFF)
         contrib["우연"] = math.log(noise) - math.log(forecast / (expected * _typical(cat)))
         true_cause = max(contrib, key=lambda f: abs(contrib[f]))
         out.append(Broadcast(
             id=f"B{i + 1:03d}", day=day, product=name, category=cat, price=price, margin=margin,
             slot=slot, minutes=minutes, card_disc=card, gift=gift, nointerest=ni, rain=rain,
             forecast_orders=round(forecast, 1), orders=orders, returns_7d=returns, true_cause=true_cause,
+            event=event,
         ))
     return out

@@ -54,8 +54,15 @@ def rank_combos(rows, base_orders, price, margin, category, return_rate):
         cm = (revenue * margin - orders * GIFT_COST[gift] - revenue * card / 100 * CARD_SHARE
               - revenue * NOINTEREST_FEE * ni - returns * (price * margin + RETURN_COST))
         out.append({"카드할인": card, "사은품": gift, "무이자": ni, "예상주문": round(orders),
-                    "예상매출_만원": round(revenue / 10000), "예상공헌이익_만원": round(cm / 10000)})
+                    "예상매출_만원": round(revenue / 10000), "예상공헌이익_만원": round(cm / 10000),
+                    "예상반품률_%": round(rr[gift] * 100, 1)})
     return out
+
+
+def best_combo(combos, max_return_pct):
+    """반품률 상한을 지키는 조합 중 예상 공헌이익 1위."""
+    ok = [c for c in combos if c["예상반품률_%"] <= max_return_pct]
+    return max(ok, key=lambda c: c["예상공헌이익_만원"]) if ok else None
 
 
 def effect_error(rows, category):
